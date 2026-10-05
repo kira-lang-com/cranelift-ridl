@@ -256,6 +256,21 @@ pub enum ArgumentPurpose {
     /// This is a pointer to a context struct containing details about the current sandbox. It is
     /// used as a base pointer for `vmctx` global values.
     VMContext,
+
+    /// The RIDL context register (KLF-RIDL section 22.2).
+    ///
+    /// Valid only as a parameter of a [`CallConv::Ridl`] signature, at most
+    /// once. The value is passed in the context register, which the callee
+    /// preserves.
+    Context,
+
+    /// The RIDL error register (KLF-RIDL sections 22.2 and 22.5).
+    ///
+    /// Valid only in a [`CallConv::Ridl`] signature, which then has exactly
+    /// one `Error` parameter and one `Error` result. The caller passes zero.
+    /// The callee returns zero on success, or a pointer to a RIDL box holding
+    /// the error value on failure. The register is not preserved.
+    Error,
 }
 
 impl fmt::Display for ArgumentPurpose {
@@ -265,6 +280,8 @@ impl fmt::Display for ArgumentPurpose {
             Self::StructArgument(size) => return write!(f, "sarg({size})"),
             Self::StructReturn => "sret",
             Self::VMContext => "vmctx",
+            Self::Context => "context",
+            Self::Error => "error",
         })
     }
 }
@@ -276,6 +293,8 @@ impl FromStr for ArgumentPurpose {
             "normal" => Ok(Self::Normal),
             "sret" => Ok(Self::StructReturn),
             "vmctx" => Ok(Self::VMContext),
+            "context" => Ok(Self::Context),
+            "error" => Ok(Self::Error),
             _ if s.starts_with("sarg(") => {
                 if !s.ends_with(")") {
                     return Err(());
@@ -364,6 +383,7 @@ impl<'a> fmt::Display for DisplayableExtFuncData<'a> {
 mod tests {
     use super::*;
     use crate::ir::types::{F32, I8, I32};
+    use crate::isa::RidlBase;
     use alloc::string::ToString;
 
     #[test]
@@ -384,6 +404,8 @@ mod tests {
             (ArgumentPurpose::StructReturn, "sret"),
             (ArgumentPurpose::VMContext, "vmctx"),
             (ArgumentPurpose::StructArgument(42), "sarg(42)"),
+            (ArgumentPurpose::Context, "context"),
+            (ArgumentPurpose::Error, "error"),
         ];
         for &(e, n) in &all_purpose {
             assert_eq!(e.to_string(), n);
@@ -399,6 +421,9 @@ mod tests {
             CallConv::Tail,
             CallConv::SystemV,
             CallConv::WindowsFastcall,
+            CallConv::Ridl(RidlBase::SystemV),
+            CallConv::Ridl(RidlBase::AppleAarch64),
+            CallConv::Ridl(RidlBase::WindowsFastcall),
         ] {
             assert_eq!(Ok(cc), cc.to_string().parse())
         }

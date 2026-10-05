@@ -71,7 +71,7 @@ use crate::ir::entities::AnyEntity;
 use crate::ir::instructions::{CallInfo, InstructionFormat, ResolvedConstraint};
 use crate::ir::{self, ArgumentExtension, BlockArg, ExceptionTable};
 use crate::ir::{
-    ArgumentPurpose, Block, Constant, DynamicStackSlot, FuncRef, Function, GlobalValue, Inst,
+    AbiParam, ArgumentPurpose, Block, Constant, DynamicStackSlot, FuncRef, Function, GlobalValue, Inst,
     JumpTable, MemFlags, MemFlagsData, Opcode, SigRef, StackSlot, Type, Value, ValueDef, ValueList,
     types,
 };
@@ -2076,6 +2076,7 @@ impl<'a> Verifier<'a> {
         entity: impl Into<AnyEntity>,
         errors: &mut VerifierErrors,
     ) -> VerifierStepResult {
+        let entity = entity.into();
         match sig.call_conv {
             CallConv::PreserveAll => {
                 if !sig.returns.is_empty() {
@@ -2086,6 +2087,64 @@ impl<'a> Verifier<'a> {
                 }
             }
             _ => {}
+        }
+        self.verify_ridl_signature(sig, entity, errors)
+    }
+
+    /// The RIDL rules for `context` and `error` values (KLF-RIDL 22.2, 22.5).
+    fn verify_ridl_signature(
+        &self,
+        sig: &Signature,
+        entity: AnyEntity,
+        errors: &mut VerifierErrors,
+    ) -> VerifierStepResult {
+        let count = |list: &[AbiParam], purpose| {
+            list.iter()
+                .filter(|param| param.purpose == purpose)
+                .count()
+        };
+        let context_params = count(&sig.params, ArgumentPurpose::Context);
+        let context_returns = count(&sig.returns, ArgumentPurpose::Context);
+        let error_params = count(&sig.params, ArgumentPurpose::Error);
+        let error_returns = count(&sig.returns, ArgumentPurpose::Error);
+        if !sig.call_conv.is_ridl() {
+            if context_params + context_returns + error_params + error_returns > 0 {
+                errors.fatal((
+                    entity,
+                    "`context` and `error` values need the RIDL calling convention".to_string(),
+                ))?;
+            }
+            return Ok(());
+        }
+        if context_params > 1 || context_returns > 0 {
+            errors.fatal((
+                entity,
+                "a RIDL signature has at most one `context` parameter and no `context` result"
+                    .to_string(),
+            ))?;
+        }
+        if error_params > 1 || error_params != error_returns {
+            errors.fatal((
+                entity,
+                "a failing RIDL signature has one `error` parameter and one `error` result"
+                    .to_string(),
+            ))?;
+        }
+        let pointer = self.isa.map(|isa| isa.pointer_type());
+        for param in sig.params.iter().chain(sig.returns.iter()) {
+            let special = matches!(
+                param.purpose,
+                ArgumentPurpose::Context | ArgumentPurpose::Error
+            );
+            if special && pointer.is_some_and(|pointer| param.value_type != pointer) {
+                errors.fatal((
+                    entity,
+                    format!(
+                        "a RIDL `{}` value is pointer-sized, not {}",
+                        param.purpose, param.value_type
+                    ),
+                ))?;
+            }
         }
         Ok(())
     }

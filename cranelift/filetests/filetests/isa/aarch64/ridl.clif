@@ -1,0 +1,246 @@
+test compile precise-output
+set unwind_info=false
+target aarch64
+
+;; Integer leaves take x0 to x7, then the stack in eight-byte slots.
+function %int_arguments(i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64 ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64, v7: i64, v8: i64):
+    v9 = iadd v0, v8
+    return v9
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+; block0:
+;   ldr x2, [sp, #16]
+;   add x0, x0, x2
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+; block1: ; offset 0x8
+;   ldur x2, [sp, #0x10]
+;   add x0, x0, x2
+;   ldp x29, x30, [sp], #0x10
+;   ret
+
+;; Results take x0 to x3 and v0 to v3 by class, at most four leaves.
+function %four_results(i64, f64) -> i64, f64, i64, f64 ridl_system_v {
+block0(v0: i64, v1: f64):
+    return v0, v1, v0, v1
+}
+
+; VCode:
+; block0:
+;   mov x1, x0
+;   mov v1.16b, v0.16b
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   mov x1, x0
+;   mov v1.16b, v0.16b
+;   ret
+
+function %four_int_results(i64) -> i64, i64, i64, i64 ridl_system_v {
+block0(v0: i64):
+    return v0, v0, v0, v0
+}
+
+; VCode:
+; block0:
+;   mov x3, x0
+;   mov x1, x3
+;   mov x2, x3
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   mov x3, x0
+;   mov x1, x3
+;   mov x2, x3
+;   ret
+
+;; An i128 is two integer leaves, low first, with no even-register alignment.
+function %i128_argument(i64, i128) -> i128 ridl_system_v {
+block0(v0: i64, v1: i128):
+    return v1
+}
+
+; VCode:
+; block0:
+;   mov x0, x1
+;   mov x1, x2
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   mov x0, x1
+;   mov x1, x2
+;   ret
+
+;; The context arrives in x20.
+function %context(i64 context, i64) -> i64 ridl_system_v {
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    return v2
+}
+
+; VCode:
+; block0:
+;   add x0, x20, x0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   add x0, x20, x0
+;   ret
+
+;; A failing function: the error register is x21 both ways and is not saved.
+function %fail(i64 error, i64) -> i64, i64 error ridl_system_v {
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 0
+    return v2, v1
+}
+
+; VCode:
+; block0:
+;   mov x21, x0
+;   movz x0, #0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   mov x21, x0
+;   mov x0, #0
+;   ret
+
+;; The indirect result is x8, beside the error register.
+function %indirect(i64 sret, i64 error, i64) -> i64 error ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64):
+    store v2, v0
+    store v2, v0+8
+    return v1
+}
+
+; VCode:
+; block0:
+;   str x0, [x8]
+;   str x0, [x8, #8]
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   str x0, [x8] ; trap: heap_oob
+;   str x0, [x8, #8] ; trap: heap_oob
+;   ret
+
+;; A platform caller passes the context in x20 and zero in x21, and saves both
+;; because they are its own callee-saves.
+function %caller(i64, i64) -> i64 {
+    fn0 = %callee(i64 context, i64 error, i64) -> i64, i64 error ridl_system_v
+
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 0
+    v3, v4 = call fn0(v0, v2, v1)
+    v5 = iadd v3, v4
+    return v5
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+;   stp x20, x21, [sp, #-16]!
+; block0:
+;   movz x21, #0
+;   load_ext_name_far x7, TestCase(%callee)+0
+;   mov x20, x0
+;   mov x0, x1
+;   blr x7
+;   add x0, x0, x21
+;   ldp x20, x21, [sp], #16
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+;   stp x20, x21, [sp, #-0x10]!
+; block1: ; offset 0xc
+;   mov x21, #0
+;   ldr x7, #0x18
+;   b #0x20
+;   udf #0 ; reloc_external Abs8 %callee 0
+;   udf #0
+;   mov x20, x0
+;   mov x0, x1
+;   blr x7
+;   add x0, x0, x21
+;   ldp x20, x21, [sp], #0x10
+;   ldp x29, x30, [sp], #0x10
+;   ret
+
+;; A RIDL caller does not save x21: the error register is not preserved.
+function %ridl_caller(i64 error, i64) -> i64, i64 error ridl_system_v {
+    fn0 = %callee(i64 error, i64) -> i64, i64 error ridl_system_v
+
+block0(v0: i64, v1: i64):
+    v2, v3 = call fn0(v0, v1)
+    return v2, v3
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+; block0:
+;   load_ext_name_far x5, TestCase(%callee)+0
+;   blr x5
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+; block1: ; offset 0x8
+;   ldr x5, #0x10
+;   b #0x18
+;   udf #0 ; reloc_external Abs8 %callee 0
+;   udf #0
+;   blr x5
+;   ldp x29, x30, [sp], #0x10
+;   ret
+
+;; The Apple base packs stack arguments at their natural size.
+function %apple_stack(i64, i64, i64, i64, i64, i64, i64, i64, i32, i32) -> i32 ridl_apple_aarch64 {
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64, v7: i64, v8: i32, v9: i32):
+    v10 = iadd v8, v9
+    return v10
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+; block0:
+;   ldr w0, [sp, #16]
+;   ldr w2, [sp, #20]
+;   add w0, w0, w2
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+; block1: ; offset 0x8
+;   ldur w0, [sp, #0x10]
+;   ldur w2, [sp, #0x14]
+;   add w0, w0, w2
+;   ldp x29, x30, [sp], #0x10
+;   ret
+

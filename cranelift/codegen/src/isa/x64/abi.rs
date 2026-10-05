@@ -17,6 +17,8 @@ use cranelift_assembler_x64 as asm;
 use regalloc2::{MachineEnv, PReg, PRegSet};
 use smallvec::{SmallVec, smallvec};
 
+mod ridl;
+
 /// Support for the x64 ABI from the callee side (within a function body).
 pub(crate) type X64Callee = Callee<X64ABIMachineSpec>;
 
@@ -81,6 +83,8 @@ impl ABIMachineSpec for X64ABIMachineSpec {
     /// with 32-bit arithmetic: for now, 128 MB.
     const STACK_ARG_RET_SIZE_LIMIT: u32 = 128 * 1024 * 1024;
 
+    const SUPPORTS_RIDL: bool = true;
+
     fn word_bits() -> u32 {
         64
     }
@@ -98,6 +102,9 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         add_ret_area_ptr: bool,
         mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
+        if let CallConv::Ridl(base) = call_conv {
+            return ridl::compute_arg_locs(base, params, args_or_rets, add_ret_area_ptr, args);
+        }
         let is_fastcall = call_conv == CallConv::WindowsFastcall;
         let is_tail = call_conv == CallConv::Tail;
 
@@ -886,6 +893,11 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         call_conv_of_callee: isa::CallConv,
         is_exception: bool,
     ) -> PRegSet {
+        if let CallConv::Ridl(base) = call_conv_of_callee {
+            // The error register is not preserved (KLF-RIDL 22.2).
+            let error = ridl::error().to_real_reg().unwrap().preg();
+            return Self::get_regs_clobbered_by_call(base.into(), is_exception).with(error);
+        }
         match (call_conv_of_callee, is_exception) {
             (isa::CallConv::Tail, true) => ALL_CLOBBERS,
             // Note that "PreserveAll" actually preserves nothing at
@@ -940,6 +952,19 @@ impl ABIMachineSpec for X64ABIMachineSpec {
                 .collect(),
             // The `preserve_all` calling convention makes every reg a callee-save reg.
             CallConv::PreserveAll => regs.iter().cloned().collect(),
+            // The base's callee-saves, except the error register, which is not
+            // preserved (KLF-RIDL 22.2).
+            CallConv::Ridl(base) => regs
+                .iter()
+                .cloned()
+                .filter(|r| r.to_reg() != ridl::error().to_real_reg().unwrap())
+                .filter(|r| match base {
+                    isa::RidlBase::WindowsFastcall => {
+                        is_callee_save_fastcall(r.to_reg(), flags.enable_pinned_reg())
+                    }
+                    _ => is_callee_save_systemv(r.to_reg(), flags.enable_pinned_reg()),
+                })
+                .collect(),
             CallConv::Probestack => todo!("probestack?"),
             CallConv::AppleAarch64 => unreachable!(),
         };
@@ -977,7 +1002,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
 
     fn exception_payload_regs(call_conv: isa::CallConv) -> &'static [Reg] {
         const PAYLOAD_REGS: &'static [Reg] = &[regs::rax(), regs::rdx()];
-        match call_conv {
+        match call_conv.base() {
             isa::CallConv::SystemV | isa::CallConv::Tail | isa::CallConv::PreserveAll => {
                 PAYLOAD_REGS
             }
@@ -1097,7 +1122,7 @@ fn get_intreg_for_retval(
 
         CallConv::Winch => is_last.then(|| regs::rax()),
         CallConv::Probestack => todo!(),
-        CallConv::AppleAarch64 => unreachable!(),
+        CallConv::AppleAarch64 | CallConv::Ridl(_) => unreachable!(),
     }
 }
 
@@ -1125,7 +1150,7 @@ fn get_fltreg_for_retval(call_conv: CallConv, fltreg_idx: usize, is_last: bool) 
         },
         CallConv::Winch => is_last.then(|| regs::xmm0()),
         CallConv::Probestack => todo!(),
-        CallConv::AppleAarch64 => unreachable!(),
+        CallConv::AppleAarch64 | CallConv::Ridl(_) => unreachable!(),
     }
 }
 

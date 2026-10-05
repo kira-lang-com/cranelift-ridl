@@ -56,6 +56,66 @@ pub enum CallConv {
     /// respective platform. It does not support tail-calls. It also
     /// does not support return values.
     PreserveAll,
+    /// The RIDL calling convention, `ridlcc` (KLF-RIDL specification,
+    /// section 22).
+    ///
+    /// On each target it is the platform's base procedure call standard,
+    /// named by the [`RidlBase`], with these additions:
+    ///
+    /// | Target family | Integer arguments | Float arguments | Direct results | Indirect result | Context | Error |
+    /// | --- | --- | --- | --- | --- | --- | --- |
+    /// | aarch64 (all OS) | x0 to x7 | v0 to v7 | x0 to x3, v0 to v3 | x8 | x20 | x21 |
+    /// | x86_64 System V | rdi rsi rdx rcx r8 r9 | xmm0 to xmm7 | rax rdx rcx r8, xmm0 to xmm3 | rax | r13 | r12 |
+    /// | x86_64 Windows | rcx rdx r8 r9 (positional with xmm0 to xmm3) | xmm0 to xmm3 | rax rdx rcx r8, xmm0 to xmm3 | rax | r13 | r12 |
+    ///
+    /// The frontend classifies every RIDL value into scalar leaves before it
+    /// reaches Cranelift; a signature holds only scalars and pointers.
+    ///
+    /// - Each argument leaf takes the next register of its class. When the
+    ///   registers of a class run out, it goes on the stack per the base
+    ///   standard. A value of several register parts (`i128`) is that many
+    ///   integer leaves, low first, in consecutive registers when they all
+    ///   fit and on the stack otherwise.
+    /// - At most four result leaves return, in the direct result registers
+    ///   of their class. A larger result returns through a
+    ///   [`StructReturn`](crate::ir::ArgumentPurpose::StructReturn)
+    ///   parameter, which is passed in the indirect result register.
+    /// - A [`Context`](crate::ir::ArgumentPurpose::Context) parameter is
+    ///   passed in the context register, which is callee-saved.
+    /// - A failing function has one
+    ///   [`Error`](crate::ir::ArgumentPurpose::Error) parameter and one
+    ///   `Error` result, both in the error register. The caller passes zero;
+    ///   the callee leaves it zero on success and stores a pointer to the
+    ///   boxed error value on failure. The error register is not preserved.
+    Ridl(RidlBase),
+}
+
+/// The platform base procedure call standard a [`CallConv::Ridl`] builds on
+/// (KLF-RIDL section 22.1).
+///
+/// The base decides register preservation, stack alignment, the red zone,
+/// shadow space, stack arguments and unwinding. RIDL decides results, the
+/// indirect result, and the context and error registers.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub enum RidlBase {
+    /// The System V standard of the target: AAPCS64 on aarch64, the System V
+    /// AMD64 ABI on x86_64.
+    SystemV,
+    /// The Apple variant of AAPCS64.
+    AppleAarch64,
+    /// The Windows x64 calling convention, or Windows' AAPCS64 on aarch64.
+    WindowsFastcall,
+}
+
+impl From<RidlBase> for CallConv {
+    fn from(base: RidlBase) -> Self {
+        match base {
+            RidlBase::SystemV => Self::SystemV,
+            RidlBase::AppleAarch64 => Self::AppleAarch64,
+            RidlBase::WindowsFastcall => Self::WindowsFastcall,
+        }
+    }
 }
 
 impl CallConv {
@@ -69,6 +129,30 @@ impl CallConv {
             Ok(CallingConvention::WindowsFastcall) => Self::WindowsFastcall,
             Ok(unimp) => unimplemented!("calling convention: {:?}", unimp),
         }
+    }
+
+    /// Return the RIDL calling convention for the given target triple: RIDL
+    /// over the triple's default convention.
+    pub fn ridl(triple: &Triple) -> Self {
+        match Self::triple_default(triple) {
+            Self::AppleAarch64 => Self::Ridl(RidlBase::AppleAarch64),
+            Self::WindowsFastcall => Self::Ridl(RidlBase::WindowsFastcall),
+            _ => Self::Ridl(RidlBase::SystemV),
+        }
+    }
+
+    /// The convention whose base rules this one follows: the platform base of
+    /// a RIDL convention, otherwise the convention itself.
+    pub fn base(self) -> Self {
+        match self {
+            Self::Ridl(base) => base.into(),
+            other => other,
+        }
+    }
+
+    /// Is this the RIDL calling convention?
+    pub fn is_ridl(self) -> bool {
+        matches!(self, Self::Ridl(_))
     }
 
     /// Returns the calling convention used for libcalls according to the current flags.
@@ -94,7 +178,7 @@ impl CallConv {
 
     /// Does this calling convention support exceptions?
     pub fn supports_exceptions(&self) -> bool {
-        match self {
+        match self.base() {
             CallConv::Tail
             | CallConv::SystemV
             | CallConv::Winch
@@ -116,7 +200,7 @@ impl CallConv {
     /// asserts that the backend supports the exact same number of register
     /// destinations as this return value.
     pub fn exception_payload_types(&self, pointer_ty: Type) -> &[Type] {
-        match self {
+        match self.base() {
             CallConv::Tail | CallConv::SystemV | CallConv::PreserveAll | CallConv::AppleAarch64 => {
                 match pointer_ty {
                     types::I32 => &[types::I32, types::I32],
@@ -140,6 +224,9 @@ impl fmt::Display for CallConv {
             Self::Probestack => "probestack",
             Self::Winch => "winch",
             Self::PreserveAll => "preserve_all",
+            Self::Ridl(RidlBase::SystemV) => "ridl_system_v",
+            Self::Ridl(RidlBase::AppleAarch64) => "ridl_apple_aarch64",
+            Self::Ridl(RidlBase::WindowsFastcall) => "ridl_windows_fastcall",
         })
     }
 }
@@ -156,6 +243,9 @@ impl str::FromStr for CallConv {
             "probestack" => Ok(Self::Probestack),
             "winch" => Ok(Self::Winch),
             "preserve_all" => Ok(Self::PreserveAll),
+            "ridl_system_v" => Ok(Self::Ridl(RidlBase::SystemV)),
+            "ridl_apple_aarch64" => Ok(Self::Ridl(RidlBase::AppleAarch64)),
+            "ridl_windows_fastcall" => Ok(Self::Ridl(RidlBase::WindowsFastcall)),
             _ => Err(()),
         }
     }

@@ -21,6 +21,10 @@ use alloc::vec::Vec;
 use regalloc2::{MachineEnv, PReg, PRegSet};
 use smallvec::{SmallVec, smallvec};
 
+mod ridl;
+
+pub(crate) use ridl::ERROR as RIDL_ERROR;
+
 // We use a generic implementation that factors out AArch64 and x64 ABI commonalities, because
 // these ABIs are very similar.
 
@@ -141,6 +145,8 @@ impl ABIMachineSpec for AArch64MachineDeps {
     /// with 32-bit arithmetic: for now, 128 MB.
     const STACK_ARG_RET_SIZE_LIMIT: u32 = 128 * 1024 * 1024;
 
+    const SUPPORTS_RIDL: bool = true;
+
     fn word_bits() -> u32 {
         64
     }
@@ -158,6 +164,9 @@ impl ABIMachineSpec for AArch64MachineDeps {
         add_ret_area_ptr: bool,
         mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
+        if let isa::CallConv::Ridl(base) = call_conv {
+            return ridl::compute_arg_locs(base, params, args_or_rets, add_ret_area_ptr, args);
+        }
         let is_apple_cc = call_conv == isa::CallConv::AppleAarch64;
         let is_winch_return = call_conv == isa::CallConv::Winch && args_or_rets == ArgsOrRets::Rets;
 
@@ -641,7 +650,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
                     });
                 }
 
-                if flags.unwind_info() && call_conv == isa::CallConv::AppleAarch64 {
+                if flags.unwind_info() && call_conv.base() == isa::CallConv::AppleAarch64 {
                     // The macOS unwinder seems to require this.
                     insts.push(Inst::Unwind {
                         inst: UnwindInst::Aarch64SetPointerAuth {
@@ -1187,6 +1196,11 @@ impl ABIMachineSpec for AArch64MachineDeps {
     }
 
     fn get_regs_clobbered_by_call(call_conv: isa::CallConv, is_exception: bool) -> PRegSet {
+        if let isa::CallConv::Ridl(base) = call_conv {
+            // The error register is not preserved (KLF-RIDL 22.2).
+            return Self::get_regs_clobbered_by_call(base.into(), is_exception)
+                .with(xreg_preg(ridl::ERROR));
+        }
         match (call_conv, is_exception) {
             (isa::CallConv::Tail, true) => ALL_CLOBBERS,
             (isa::CallConv::Winch, true) => ALL_CLOBBERS,
@@ -1211,7 +1225,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
         call_conv: isa::CallConv,
         specified: ir::ArgumentExtension,
     ) -> ir::ArgumentExtension {
-        if call_conv == isa::CallConv::AppleAarch64 {
+        if call_conv.base() == isa::CallConv::AppleAarch64 {
             specified
         } else {
             ir::ArgumentExtension::None
@@ -1238,7 +1252,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
             })
             .collect();
 
-        if call_conv == isa::CallConv::AppleAarch64 && flags.enable_compact_unwind_abi() {
+        if call_conv.base() == isa::CallConv::AppleAarch64 && flags.enable_compact_unwind_abi() {
             add_macho_compact_unwind_paired_regs(&mut regs);
             // For Mach-O compact unwind, these pushes/pops must be emitted in
             // the fixed expected order. The encoding specifies only which
@@ -1295,7 +1309,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
 
     fn exception_payload_regs(call_conv: isa::CallConv) -> &'static [Reg] {
         const PAYLOAD_REGS: &'static [Reg] = &[regs::xreg(0), regs::xreg(1)];
-        match call_conv {
+        match call_conv.base() {
             isa::CallConv::SystemV
             | isa::CallConv::Tail
             | isa::CallConv::PreserveAll
@@ -1388,6 +1402,10 @@ fn is_reg_saved_in_prologue(
 ) -> bool {
     if call_conv == isa::CallConv::PreserveAll {
         return true;
+    }
+    if call_conv.is_ridl() && r.class() == RegClass::Int && r.hw_enc() == ridl::ERROR {
+        // The error register is not preserved (KLF-RIDL 22.2).
+        return false;
     }
 
     // FIXME: We need to inspect whether a function is returning Z or P regs too.

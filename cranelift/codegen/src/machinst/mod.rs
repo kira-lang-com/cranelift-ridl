@@ -60,7 +60,7 @@ use core::fmt::Debug;
 use core::num::NonZeroU8;
 use cranelift_control::ControlPlane;
 use cranelift_entity::PrimaryMap;
-use regalloc2::VReg;
+use regalloc2::{PRegSet, VReg};
 use smallvec::{SmallVec, smallvec};
 
 #[cfg(feature = "enable-serde")]
@@ -301,6 +301,14 @@ pub trait MachInst: Clone + Debug {
     /// Should this instruction's clobber-list be included in the
     /// clobber-set?
     fn is_included_in_clobbers(&self) -> bool;
+
+    /// Registers added to the clobber-set even when
+    /// [`MachInst::is_included_in_clobbers`] excludes this instruction's
+    /// clobber-list: what a call clobbers beyond a convention the caller
+    /// shares, such as the error register of a RIDL callee.
+    fn extra_clobbers(&self) -> PRegSet {
+        PRegSet::empty()
+    }
 
     /// Does this instruction access memory?
     fn is_mem_access(&self) -> bool;

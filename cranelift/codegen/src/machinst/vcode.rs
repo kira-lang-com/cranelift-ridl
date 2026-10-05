@@ -682,8 +682,13 @@ impl<I: VCodeInst> VCode<I> {
         for (i, range) in self.operand_ranges.iter() {
             let operands = &self.operands[range.clone()];
             let allocs = &regalloc.allocs[range];
+            // The `args` pseudo-instruction defines the registers the caller
+            // passed values in; it writes none of them. A callee-saved
+            // argument register, such as the RIDL context register, is
+            // clobbered only if something else writes it.
+            let incoming = self.insts[i].is_args();
             for (operand, alloc) in operands.iter().zip(allocs.iter()) {
-                if operand.kind() == OperandKind::Def {
+                if operand.kind() == OperandKind::Def && !incoming {
                     if let Some(preg) = alloc.as_reg() {
                         clobbered.add(preg);
                     }
@@ -715,6 +720,8 @@ impl<I: VCodeInst> VCode<I> {
                 if let Some(&inst_clobbered) = self.clobbers.get(&InsnIndex::new(i)) {
                     clobbered.union_from(inst_clobbered);
                 }
+            } else {
+                clobbered.union_from(self.insts[i].extra_clobbers());
             }
         }
 

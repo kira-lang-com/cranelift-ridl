@@ -1,0 +1,46 @@
+test verifier
+target aarch64
+
+function %context_needs_ridl(i64 context) -> i64 { ; error: `context` and `error` values need the RIDL calling convention
+block0(v0: i64):
+    return v0
+}
+
+function %error_needs_ridl(i64 error) -> i64 error system_v { ; error: `context` and `error` values need the RIDL calling convention
+block0(v0: i64):
+    return v0
+}
+
+function %context_is_not_a_result(i64 context) -> i64 context ridl_system_v { ; error: a RIDL signature has at most one `context` parameter and no `context` result
+block0(v0: i64):
+    return v0
+}
+
+function %one_context(i64 context, i64 context) ridl_system_v { ; error: a RIDL signature has at most one `context` parameter and no `context` result
+block0(v0: i64, v1: i64):
+    return
+}
+
+function %error_result_needs_error_parameter() -> i64 error ridl_system_v { ; error: a failing RIDL signature has one `error` parameter and one `error` result
+block0:
+    v0 = iconst.i64 0
+    return v0
+}
+
+function %error_parameter_needs_error_result(i64 error) ridl_system_v { ; error: a failing RIDL signature has one `error` parameter and one `error` result
+block0(v0: i64):
+    return
+}
+
+function %error_is_pointer_sized(i32 error) -> i32 error ridl_system_v { ; error: a RIDL `error` value is pointer-sized, not i32
+block0(v0: i32):
+    return v0
+}
+
+function %caller(i64) {
+    sig0 = (i64 error) ridl_system_v ; error: a failing RIDL signature has one `error` parameter and one `error` result
+
+block0(v0: i64):
+    call_indirect sig0, v0(v0)
+    return
+}

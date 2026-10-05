@@ -1,0 +1,160 @@
+test run
+target aarch64
+target x86_64
+
+function %ridl_four(i64) -> i64, i64, i64, i64 ridl_system_v {
+block0(v0: i64):
+    v101 = iconst.i64 1
+    v1 = iadd v0, v101
+    v102 = iconst.i64 2
+    v2 = iadd v0, v102
+    v103 = iconst.i64 3
+    v3 = iadd v0, v103
+    return v0, v1, v2, v3
+}
+
+function %call_four(i64) -> i64 {
+    fn0 = %ridl_four(i64) -> i64, i64, i64, i64 ridl_system_v
+
+block0(v0: i64):
+    v1, v2, v3, v4 = call fn0(v0)
+    v104 = iconst.i64 10
+    v5 = imul v2, v104
+    v105 = iconst.i64 100
+    v6 = imul v3, v105
+    v106 = iconst.i64 1000
+    v7 = imul v4, v106
+    v8 = iadd v1, v5
+    v9 = iadd v8, v6
+    v10 = iadd v9, v7
+    return v10
+}
+; run: %call_four(1) == 4321
+
+function %ridl_mixed(f64, i64) -> f64, i64, f64, i64 ridl_system_v {
+block0(v0: f64, v1: i64):
+    v2 = fadd v0, v0
+    v3 = iadd v1, v1
+    return v0, v1, v2, v3
+}
+
+function %call_mixed(f64, i64) -> f64 {
+    fn0 = %ridl_mixed(f64, i64) -> f64, i64, f64, i64 ridl_system_v
+
+block0(v0: f64, v1: i64):
+    v2, v3, v4, v5 = call fn0(v0, v1)
+    v6 = iadd v3, v5
+    v7 = fcvt_from_sint.f64 v6
+    v8 = fadd v2, v4
+    v9 = fadd v8, v7
+    return v9
+}
+; run: %call_mixed(0x1.0p0, 2) == 0x1.2p3
+
+function %ridl_context(i64 context, i64) -> i64 ridl_system_v {
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    return v2
+}
+
+function %call_context(i64, i64) -> i64 {
+    fn0 = %ridl_context(i64 context, i64) -> i64 ridl_system_v
+
+block0(v0: i64, v1: i64):
+    v2 = call fn0(v0, v1)
+    v3 = call fn0(v0, v2)
+    return v3
+}
+; run: %call_context(20, 2) == 42
+
+function %ridl_divide(i64 error, i64, i64) -> i64, i64 error ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64):
+    brif v2, block1, block2
+
+block1:
+    v3 = sdiv v1, v2
+    return v3, v0
+
+block2:
+    v4 = iconst.i64 0
+    v5 = iconst.i64 77
+    return v4, v5
+}
+
+function %call_divide(i64, i64) -> i64 {
+    fn0 = %ridl_divide(i64 error, i64, i64) -> i64, i64 error ridl_system_v
+
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 0
+    v3, v4 = call fn0(v2, v0, v1)
+    v5 = iadd v3, v4
+    return v5
+}
+; run: %call_divide(84, 2) == 42
+; run: %call_divide(84, 0) == 77
+
+function %ridl_fill(i64 sret, i64 error, i64) -> i64 error ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64):
+    store v2, v0
+    v107 = iconst.i64 1
+    v3 = iadd v2, v107
+    store v3, v0+8
+    return v1
+}
+
+function %call_fill(i64) -> i64 {
+    ss0 = explicit_slot 16
+    fn0 = %ridl_fill(i64 sret, i64 error, i64) -> i64 error ridl_system_v
+
+block0(v0: i64):
+    v1 = stack_addr.i64 ss0
+    v2 = iconst.i64 0
+    v3 = call fn0(v1, v2, v0)
+    v4 = load.i64 v1
+    v5 = load.i64 v1+8
+    v6 = iadd v4, v5
+    v7 = iadd v6, v3
+    return v7
+}
+; run: %call_fill(20) == 41
+
+function %ridl_i128(i64, i128, i64) -> i128 ridl_system_v {
+block0(v0: i64, v1: i128, v2: i64):
+    v3 = uextend.i128 v0
+    v4 = uextend.i128 v2
+    v5 = iadd v1, v3
+    v6 = iadd v5, v4
+    return v6
+}
+
+function %call_i128(i64, i64) -> i64 {
+    fn0 = %ridl_i128(i64, i128, i64) -> i128 ridl_system_v
+
+block0(v0: i64, v1: i64):
+    v2 = iconcat v0, v1
+    v3 = iconst.i64 1
+    v4 = call fn0(v3, v2, v3)
+    v5, v6 = isplit v4
+    v7 = iadd v5, v6
+    return v7
+}
+; run: %call_i128(40, 0) == 42
+; run: %call_i128(-1, 0) == 2
+
+function %ridl_stack(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64 ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64, v7: i64, v8: i64, v9: i64):
+    v10 = iadd v0, v8
+    v11 = iadd v10, v9
+    return v11
+}
+
+function %call_stack(i64) -> i64 {
+    fn0 = %ridl_stack(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64 ridl_system_v
+
+block0(v0: i64):
+    v1 = iconst.i64 1
+    v2 = iconst.i64 2
+    v3 = call fn0(v0, v1, v1, v1, v1, v1, v1, v1, v2, v2)
+    return v3
+}
+; run: %call_stack(38) == 42
