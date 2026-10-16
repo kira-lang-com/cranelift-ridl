@@ -1,0 +1,325 @@
+test compile precise-output
+set unwind_info=false
+target x86_64
+
+;; Integer leaves take rdi rsi rdx rcx r8 r9, then the stack.
+function %int_arguments(i64, i64, i64, i64, i64, i64, i64) -> i64 ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64):
+    v7 = iadd v0, v6
+    return v7
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq <offset:0>+-0x10(%rbp), %rdx
+;   leaq (%rdi, %rdx), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq 0x10(%rbp), %rdx
+;   leaq (%rdi, %rdx), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; Results take rax rdx rcx r8 and xmm0 to xmm3 by class, at most four leaves.
+function %four_int_results(i64) -> i64, i64, i64, i64 ridl_system_v {
+block0(v0: i64):
+    return v0, v0, v0, v0
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq %rdi, %r8
+;   movq %r8, %rax
+;   movq %r8, %rcx
+;   movq %r8, %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq %rdi, %r8
+;   movq %r8, %rax
+;   movq %r8, %rcx
+;   movq %r8, %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %four_results(i64, f64) -> i64, f64, i64, f64 ridl_system_v {
+block0(v0: i64, v1: f64):
+    return v0, v1, v0, v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq %rdi, %rdx
+;   movdqa %xmm0, %xmm1
+;   movq %rdx, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq %rdi, %rdx
+;   movdqa %xmm0, %xmm1
+;   movq %rdx, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; An i128 is two integer leaves, low first.
+function %i128_argument(i64, i128) -> i128 ridl_system_v {
+block0(v0: i64, v1: i128):
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq %rsi, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq %rsi, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; The context arrives in r13.
+function %context(i64 context, i64) -> i64 ridl_system_v {
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    return v2
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   leaq (%r13, %rdi), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   leaq (%r13, %rdi), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; A failing function: the error register is r12 both ways and is not saved.
+function %fail(i64 error, i64) -> i64, i64 error ridl_system_v {
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 0
+    return v2, v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   uninit  %rax
+;   xorq %rax, %rax
+;   movq %rdi, %r12
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   xorq %rax, %rax
+;   movq %rdi, %r12
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; The indirect result is rax, beside the error register.
+function %indirect(i64 sret, i64 error, i64) -> i64 error ridl_system_v {
+block0(v0: i64, v1: i64, v2: i64):
+    store v2, v0
+    store v2, v0+8
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq %rdi, (%rax)
+;   movq %rdi, 8(%rax)
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq %rdi, (%rax) ; trap: heap_oob
+;   movq %rdi, 8(%rax) ; trap: heap_oob
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; A platform caller passes the context in r13 and zero in r12.
+function %caller(i64, i64) -> i64 {
+    fn0 = %callee(i64 context, i64 error, i64) -> i64, i64 error ridl_system_v
+
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 0
+    v3, v4 = call fn0(v0, v2, v1)
+    v5 = iadd v3, v4
+    return v5
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x10, %rsp
+;   movq %r12, (%rsp)
+;   movq %r13, 8(%rsp)
+; block0:
+;   uninit  %r12
+;   xorq %r12, %r12
+;   load_ext_name %callee+0, %r8
+;   movq %rdi, %r13
+;   movq %rsi, %rdi
+;   call    *%r8
+;   leaq (%rax, %r12), %rax
+;   movq (%rsp), %r12
+;   movq 8(%rsp), %r13
+;   addq $0x10, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x10, %rsp
+;   movq %r12, (%rsp)
+;   movq %r13, 8(%rsp)
+; block1: ; offset 0x11
+;   xorq %r12, %r12
+;   movabsq $0, %r8 ; reloc_external Abs8 %callee 0
+;   movq %rdi, %r13
+;   movq %rsi, %rdi
+;   callq *%r8
+;   addq %r12, %rax
+;   movq (%rsp), %r12
+;   movq 8(%rsp), %r13
+;   addq $0x10, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+;; Windows assigns rcx rdx r8 r9 and xmm0 to xmm3 by position, after 32 bytes
+;; of shadow space on the stack.
+function %windows_positional(i64, f64, i64, f64, i64) -> i64 ridl_windows_fastcall {
+block0(v0: i64, v1: f64, v2: i64, v3: f64, v4: i64):
+    v5 = iadd v0, v2
+    v6 = iadd v5, v4
+    return v6
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x10, %rsp
+;   movq %rsi, (%rsp)
+;   movq %rdi, 8(%rsp)
+; block0:
+;   movq <offset:0>+-0x10(%rbp), %rsi
+;   leaq (%rcx, %r8), %rdi
+;   leaq (%rdi, %rsi), %rax
+;   movq (%rsp), %rsi
+;   movq 8(%rsp), %rdi
+;   addq $0x10, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x10, %rsp
+;   movq %rsi, (%rsp)
+;   movq %rdi, 8(%rsp)
+; block1: ; offset 0x11
+;   movq 0x30(%rbp), %rsi
+;   leaq (%rcx, %r8), %rdi
+;   leaq (%rdi, %rsi), %rax
+;   movq (%rsp), %rsi
+;   movq 8(%rsp), %rdi
+;   addq $0x10, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %windows_results(i64) -> i64, i64, i64, i64 ridl_windows_fastcall {
+block0(v0: i64):
+    return v0, v0, v0, v0
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq %rcx, %r8
+;   movq %r8, %rax
+;   movq %r8, %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq %rcx, %r8
+;   movq %r8, %rax
+;   movq %r8, %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+

@@ -362,6 +362,9 @@ pub trait ABIMachineSpec {
     /// with 32-bit arithmetic.
     const STACK_ARG_RET_SIZE_LIMIT: u32;
 
+    /// Whether this backend implements [`isa::CallConv::Ridl`].
+    const SUPPORTS_RIDL: bool = false;
+
     /// Returns the number of bits in a word, that is 32/64 for 32/64-bit architecture.
     fn word_bits() -> u32;
 
@@ -888,18 +891,25 @@ impl SigSet {
         sig: &ir::Signature,
         flags: &settings::Flags,
     ) -> CodegenResult<SigData> {
+        if sig.call_conv.is_ridl() && !M::SUPPORTS_RIDL {
+            return Err(CodegenError::Unsupported(
+                "the RIDL calling convention is not implemented for this target".into(),
+            ));
+        }
         // Keep in sync with ensure_struct_return_ptr_is_returned
         if sig.uses_special_return(ArgumentPurpose::StructReturn) {
             panic!("Explicit StructReturn return value not allowed: {sig:?}")
         }
-        let tmp;
+        let tmp: Vec<ir::AbiParam>;
         let returns = if let Some(struct_ret_index) =
             sig.special_param_index(ArgumentPurpose::StructReturn)
         {
-            if !sig.returns.is_empty() {
+            if !only_error_returns(sig) {
                 panic!("No return values are allowed when using StructReturn: {sig:?}");
             }
-            tmp = [sig.params[struct_ret_index]];
+            tmp = core::iter::once(sig.params[struct_ret_index])
+                .chain(sig.returns.iter().copied())
+                .collect();
             &tmp
         } else {
             sig.returns.as_slice()
@@ -1231,7 +1241,8 @@ impl<M: ABIMachineSpec> Callee<M> {
                 || call_conv == isa::CallConv::WindowsFastcall
                 || call_conv == isa::CallConv::AppleAarch64
                 || call_conv == isa::CallConv::Winch
-                || call_conv == isa::CallConv::PreserveAll,
+                || call_conv == isa::CallConv::PreserveAll
+                || call_conv.is_ridl(),
             "Unsupported calling convention: {call_conv:?}"
         );
 
@@ -1473,12 +1484,20 @@ fn ensure_struct_return_ptr_is_returned(sig: &ir::Signature) -> ir::Signature {
         panic!("Explicit StructReturn return value not allowed: {sig:?}")
     }
     if let Some(struct_ret_index) = sig.special_param_index(ArgumentPurpose::StructReturn) {
-        if !sig.returns.is_empty() {
+        if !only_error_returns(&sig) {
             panic!("No return values are allowed when using StructReturn: {sig:?}");
         }
         sig.returns.insert(0, sig.params[struct_ret_index]);
     }
     sig
+}
+
+/// Whether every return value of `sig` is a RIDL `error` result, the one value
+/// a RIDL function returning through an indirect result also has.
+fn only_error_returns(sig: &ir::Signature) -> bool {
+    sig.returns
+        .iter()
+        .all(|ret| sig.call_conv.is_ridl() && ret.purpose == ArgumentPurpose::Error)
 }
 
 /// ### Pre-Regalloc Functions

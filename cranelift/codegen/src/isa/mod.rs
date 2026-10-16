@@ -44,7 +44,7 @@
 //! concurrent function compilations.
 
 use crate::dominator_tree::DominatorTree;
-pub use crate::isa::call_conv::CallConv;
+pub use crate::isa::call_conv::{CallConv, RidlBase};
 
 use crate::CodegenResult;
 use crate::ir::{self, Function, Type};

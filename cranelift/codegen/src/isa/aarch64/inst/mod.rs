@@ -984,12 +984,29 @@ impl MachInst for Inst {
         //
         // See the note in [crate::isa::aarch64::abi::is_caller_save_reg] for
         // more information on this ABI-implementation hack.
-        let caller_clobbers = AArch64MachineDeps::get_regs_clobbered_by_call(caller, false);
-        let callee_clobbers = AArch64MachineDeps::get_regs_clobbered_by_call(callee, is_exception);
+        //
+        // RIDL conventions compare by their base: the error register a RIDL
+        // callee adds is reported by `extra_clobbers`.
+        let caller_clobbers = AArch64MachineDeps::get_regs_clobbered_by_call(caller.base(), false);
+        let callee_clobbers =
+            AArch64MachineDeps::get_regs_clobbered_by_call(callee.base(), is_exception);
 
         let mut all_clobbers = caller_clobbers;
         all_clobbers.union_from(callee_clobbers);
         all_clobbers != caller_clobbers
+    }
+
+    fn extra_clobbers(&self) -> regalloc2::PRegSet {
+        let (caller, callee) = match self {
+            Inst::Call { info } => (info.caller_conv, info.callee_conv),
+            Inst::CallInd { info } => (info.caller_conv, info.callee_conv),
+            _ => return regalloc2::PRegSet::empty(),
+        };
+        if callee.is_ridl() && !caller.is_ridl() {
+            regalloc2::PRegSet::empty().with(xreg_preg(crate::isa::aarch64::abi::RIDL_ERROR))
+        } else {
+            regalloc2::PRegSet::empty()
+        }
     }
 
     fn is_trap(&self) -> bool {
